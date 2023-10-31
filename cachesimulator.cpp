@@ -13,6 +13,7 @@ Offset Bits: the offset field is used to determine which byte in the block is be
 #include <algorithm>
 #include <bitset>
 #include <cmath>
+#include <cassert>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -21,15 +22,18 @@ Offset Bits: the offset field is used to determine which byte in the block is be
 #include <string>
 #include <vector>
 using namespace std;
-//access state:
-#define NA 0 // no action
-#define RH 1 // read hit
-#define RM 2 // read miss
-#define WH 3 // Write hit
-#define WM 4 // write miss
+
+// access state:
+#define NA 0         // no action
+#define RH 1         // read hit
+#define RM 2         // read miss
+#define WH 3         // Write hit
+#define WM 4         // write miss
 #define NOWRITEMEM 5 // no write to memory
 #define WRITEMEM 6   // write to memory
 
+int iter;
+int Id;
 struct config
 {
     int L1blocksize;
@@ -50,10 +54,16 @@ A single cache block:
     - tag (the tag bits of the address)
     - data (the actual data stored in the block, in our case, we don't need to store the data)
 */
+#define DIRTY 2
+#define VALID 1
+
 struct CacheBlock
 {
     // we don't actually need to allocate space for data, because we only need to simulate the cache action
-    // or else it would have looked something like this: vector<number of bytes> Data; 
+    // or else it would have looked something like this: vector<number of bytes> Data;
+    uint32_t tag{};
+    uint16_t dirty{};
+    uint16_t valid{};
 };
 
 /*
@@ -61,99 +71,242 @@ A CacheSet:
     - a vector of CacheBlocks
     - a counter to keep track of which block to evict next
 */
-struct set
+class CacheSet
 {
-    // tips: 
-    // Associativity: eg. resize to 4-ways set associative cache    
-};
+    // tips:
+    // Associativity: eg. resize to 4-ways set associative cache
+    vector<CacheBlock> lines{};
+    uint32_t capacity{};
+    uint32_t idx{};
 
-// You can design your own data structure for L1 and L2 cache; just an example here
-class cache
-{
-    // some cache configuration parameters.
-    // cache L1 or L2
 public:
-    cache(){
-        // initialize the cache according to cache parameters
+    CacheSet() = default;
+    CacheSet(uint32_t setSize) : capacity(setSize), lines(setSize)
+    {
     }
 
-    auto write(auto addr){
-        /*
-        step 1: select the set in our L1 cache using set index bits
-        step 2: iterate through each way in the current set
-            - If Matching tag and Valid Bit High -> WriteHit!
-                                                    -> Dirty Bit High
-        step 3: Otherwise? -> WriteMiss!
-
-        return WH or WM
-        */
+    //
+    // if contain, return {true, dirty bit}
+    // else, return {false, ?}
+    //
+    pair<bool, uint8_t> contain(uint32_t tag, bool writeOp)
+    {
+        for (int i = 0; i < capacity; ++i)
+        {
+            if (lines[i].valid && lines[i].tag == tag)
+            {
+                if (writeOp)
+                    lines[i].dirty = 1;
+                return {true, lines[i].dirty};
+            }
+        }
+        return {false, 0};
     }
 
-    auto writeL2(auto addr){
-        /*
-        step 1: select the set in our L2 cache using set index bits
-        step 2: iterate through each way in the current set
-            - If Matching tag and Valid Bit High -> WriteHit!
-                                                 -> Dirty Bit High
-        step 3: Otherwise? -> WriteMiss!
-
-        return {WM or WH, WRITEMEM or NOWRITEMEM}
-        */
+    void invalid(uint32_t tag)
+    {
+        for (int i = 0; i < capacity; ++i)
+        {
+            if (lines[i].valid && lines[i].tag == tag)
+            {
+                lines[i].valid = 0;
+                break;
+            }
+        }
     }
 
-    auto readL1(auto addr){
-        /*
-        step 1: select the set in our L1 cache using set index bits
-        step 2: iterate through each way in the current set
-            - If Matching tag and Valid Bit High -> ReadHit!
-        step 3: Otherwise? -> ReadMiss!
+    //
+    // Insert the data block with tag into the set.
+    // the return value is a pair. The first value is the tag of the replaced block (if any),
+    // and the second value is the significant and dirty bits of the replaced block (if dirty, | 2; if valid, | 1)
+    //
+    pair<uint32_t, uint8_t> evict(uint32_t tag, uint8_t dirty)
+    {
+        pair<uint32_t, uint8_t> res{};
 
-        return RH or RM
-        */
-    }
+        // search empty slot
+        int i;
+        for (i = 0;; ++i)
+        {
+            if (i == capacity)
+            {
+                i = idx;
+                res.first = lines[idx].tag;
+                res.second |= VALID;
+                res.second |= 1 << lines[idx].dirty; // whether the block is dirty
+                idx = (idx + 1) % capacity;
 
-    auto readL2(auto addr){
-        /*
-        step 1: select the set in our L2 cache using set index bits
-        step 2: iterate through each way in the current set
-            - If Matching tag and Valid Bit High -> ReadHit!
-                                                 -> copy dirty bit
-        step 3: otherwise? -> ReadMiss! -> need to pull data from Main Memory
-        step 4: find a place in L1 for our requested data
-            - case 1: empty way in L1 -> place requested data
-            - case 2: no empty way in L1 -> evict from L1 to L2
-                    - case 2.1: empty way in L2 -> place evicted L1 data there
-                    - case 2.2: no empty way in L2 -> evict from L2 to memory
+                break;
+            }
+            else if (!lines[i].valid)
+                break;
+        }
 
-        return {RM or RH, WRITEMEM or NOWRITEMEM}
-        */
+        lines[i].tag = tag;
+        lines[i].dirty = dirty;
+        lines[i].valid = 1;
+
+        return res;
     }
 };
 
 // Tips: another example:
-class CacheSystem
+struct OpRes
 {
-    Cache L1;
-    Cache L2;
-public:
     int L1AcceState, L2AcceState, MemAcceState;
-    auto read(auto addr){};
-    auto write(auto addr){};
 };
+
 class Cache
 {
-    set * CacheSet;
+    vector<CacheSet> cacheSet{};
+    uint32_t offset{};
+    uint32_t setLen{};
+    int id{};
+
+    uint32_t getTag(uint32_t addr) const
+    {
+        return addr >> (offset + setLen);
+    }
+
+    uint32_t getSetIndex(uint32_t addr) const
+    {
+        return (addr >> offset) & ((1 << setLen) - 1);
+    }
+
+    pair<bool, uint8_t> access(uint32_t addr, bool writeOp)
+    {
+        // get the tag and index
+        uint32_t tag = getTag(addr);
+        uint32_t index = getSetIndex(addr);
+
+        return cacheSet[index].contain(tag, writeOp);
+    }
+
 public:
-    auto read_access(auto addr){};
-    auto write_access(auto addr){};
-    auto check_exist(auto addr){};
-    auto evict(auto addr){};
+    Cache() = default;
+    Cache(uint32_t blockSize, uint32_t setSize, uint32_t cacheSize)
+    {
+        this->id = ++Id;
+        // get the number of sets
+        offset = log2(blockSize);
+        if (setSize)
+        {
+            setLen = (10 + log2(cacheSize)) - log2(setSize) - offset;
+            cacheSet.resize(1 << setLen, CacheSet(setSize));
+        }
+        else
+        {
+            setLen = 0;
+            cacheSet.resize(1 << setLen, CacheSet(1024 * cacheSize / blockSize));
+        }
+    }
+
+    pair<bool, uint8_t> read_access(uint32_t addr)
+    {
+        return access(addr, false);
+    }
+
+    pair<bool, uint8_t> write_access(uint32_t addr)
+    {
+        return access(addr, true);
+    }
+
+    void invalid(uint32_t addr)
+    {
+        // get the tag and index
+        uint32_t tag = getTag(addr);
+        uint32_t index = getSetIndex(addr);
+
+        cacheSet[index].invalid(tag);
+    }
+
+    //
+    // Insert the data block corresponding to addr into the set.
+    // the return value is a pair. The first value is the address of the replaced block (if any),
+    // and the second value is the significant and dirty bits of the replaced block (if dirty, | 2; if valid, | 1)
+    //
+    pair<uint32_t, uint8_t> evict(uint32_t addr, uint8_t dirty)
+    {
+        assert(!read_access(addr).first);
+        // get the tag and index
+        uint32_t tag = getTag(addr);
+        uint32_t index = getSetIndex(addr);
+
+        auto res = cacheSet[index].evict(tag, dirty);
+
+        // If the replaced block is valid,
+        // construct the address of the data block
+        if (res.second & VALID)
+        {
+            // Tag | index | offset(00..)
+            res.first <<= setLen;
+            res.first |= index;
+            res.first <<= offset;
+        }
+        return res;
+    }
 };
+
+class CacheSystem
+{
+    Cache L1{};
+    Cache L2{};
+
+public:
+    CacheSystem() = default;
+    CacheSystem(struct config &cfg)
+        : L1(cfg.L1blocksize, cfg.L1setsize, cfg.L1size), L2(cfg.L2blocksize, cfg.L2setsize, cfg.L2size)
+    {
+    }
+    OpRes read(uint32_t addr)
+    {
+        OpRes res{};
+        uint8_t dirty{};
+        pair<bool, uint8_t> tmp;
+
+        if (L1.read_access(addr).first) // L1 hit ?
+            res = {RH, NA, NOWRITEMEM};
+        else if ((tmp = L2.read_access(addr)).first) // L2 hit ?
+        {
+            dirty = tmp.second;
+            res = {RM, RH, NOWRITEMEM};
+            L2.invalid(addr); // set L2 valid low
+        }
+        else // Read from memory
+            res = {RM, RM, NOWRITEMEM};
+
+        // if read L1 miss, load from L2 or memory
+        if (res.L1AcceState == RM)
+        {
+            auto victim = L1.evict(addr, dirty);
+            // the victim is valid, place to L2(L2 definitely does not contain this data block)
+            if (victim.second & VALID)
+            {
+                victim = L2.evict(victim.first, (victim.second & DIRTY) >> 1);
+                if (victim.second == (DIRTY | VALID)) // the victim in L2 is valid & dirty, write to memory
+                    res.MemAcceState = WRITEMEM;
+            }
+        }
+
+        return res;
+    }
+
+    OpRes write(uint32_t addr)
+    {
+        OpRes res;
+
+        if (L1.write_access(addr).first)
+            res = {WH, NA, NOWRITEMEM};
+        else if (L2.write_access(addr).first)
+            res = {WM, WH, NOWRITEMEM};
+        else
+            res = {WM, WM, WRITEMEM};
+
+        return res;
+    }
+};
+
 /*********************************** ↑↑↑ Todo: Implement by you ↑↑↑ ******************************************/
-
-
-
-
 
 int main(int argc, char *argv[])
 {
@@ -162,16 +315,16 @@ int main(int argc, char *argv[])
     ifstream cache_params;
     string dummyLine;
     cache_params.open(argv[1]);
-    while (!cache_params.eof())                   // read config file
+    while (!cache_params.eof()) // read config file
     {
-        cache_params >> dummyLine;                // L1:
-        cache_params >> cacheconfig.L1blocksize;  // L1 Block size
-        cache_params >> cacheconfig.L1setsize;    // L1 Associativity
-        cache_params >> cacheconfig.L1size;       // L1 Cache Size
-        cache_params >> dummyLine;                // L2:
-        cache_params >> cacheconfig.L2blocksize;  // L2 Block size
-        cache_params >> cacheconfig.L2setsize;    // L2 Associativity
-        cache_params >> cacheconfig.L2size;       // L2 Cache Size
+        cache_params >> dummyLine;               // L1:
+        cache_params >> cacheconfig.L1blocksize; // L1 Block size
+        cache_params >> cacheconfig.L1setsize;   // L1 Associativity
+        cache_params >> cacheconfig.L1size;      // L1 Cache Size
+        cache_params >> dummyLine;               // L2:
+        cache_params >> cacheconfig.L2blocksize; // L2 Block size
+        cache_params >> cacheconfig.L2setsize;   // L2 Associativity
+        cache_params >> cacheconfig.L2size;      // L2 Cache Size
     }
     ifstream traces;
     ofstream tracesout;
@@ -185,31 +338,33 @@ int main(int argc, char *argv[])
     unsigned int addr;     // the address from the memory trace store in unsigned int;
     bitset<32> accessaddr; // the address from the memory trace store in the bitset;
 
-
-
-
-/*********************************** ↓↓↓ Todo: Implement by you ↓↓↓ ******************************************/
+    /*********************************** ↓↓↓ Todo: Implement by you ↓↓↓ ******************************************/
     // Implement by you:
     // initialize the hirearch cache system with those configs
     // probably you may define a Cache class for L1 and L2, or any data structure you like
-    if (cacheconfig.L1blocksize!=cacheconfig.L2blocksize){
+    if (cacheconfig.L1blocksize != cacheconfig.L2blocksize)
+    {
         printf("please test with the same block size\n");
         return 1;
     }
     // cache c1(cacheconfig.L1blocksize, cacheconfig.L1setsize, cacheconfig.L1size,
     //          cacheconfig.L2blocksize, cacheconfig.L2setsize, cacheconfig.L2size);
 
-    int L1AcceState = NA; // L1 access state variable, can be one of NA, RH, RM, WH, WM;
-    int L2AcceState = NA; // L2 access state variable, can be one of NA, RH, RM, WH, WM;
-    int MemAcceState = NOWRITEMEM; // Main Memory access state variable, can be either NA or WH;
+    int L1AcceState = 0;  // L1 access state variable, can be one of NA, RH, RM, WH, WM;
+    int L2AcceState = 0;  // L2 access state variable, can be one of NA, RH, RM, WH, WM;
+    int MemAcceState = 0; // Main Memory access state variable, can be either NA or WH;
 
+    CacheSystem cacheSystem(cacheconfig);
+    OpRes res;
     if (traces.is_open() && tracesout.is_open())
     {
         while (getline(traces, line))
-        { // read mem access file and access Cache
-
+        {
+            ++iter;
+            // read mem access file and access Cache
             istringstream iss(line);
-            if (!(iss >> accesstype >> xaddr)){
+            if (!(iss >> accesstype >> xaddr))
+            {
                 break;
             }
             stringstream saddr(xaddr);
@@ -217,22 +372,24 @@ int main(int argc, char *argv[])
             accessaddr = bitset<32>(addr);
 
             // access the L1 and L2 Cache according to the trace;
-            if (accesstype.compare("R") == 0)  // a Read request
+            if (accesstype.compare("R") == 0) // a Read request
             {
                 // Implement by you:
                 //   read access to the L1 Cache,
                 //   and then L2 (if required),
                 //   update the access state variable;
                 //   return: L1AcceState L2AcceState MemAcceState
-                
+
                 // For example:
                 // L1AcceState = cache.readL1(addr); // read L1
                 // if(L1AcceState == RM){
                 //     L2AcceState, MemAcceState = cache.readL2(addr); // if L1 read miss, read L2
                 // }
                 // else{ ... }
+                res = cacheSystem.read(accessaddr.to_ulong());
             }
-            else{ // a Write request
+            else
+            { // a Write request
                 // Implement by you:
                 //   write access to the L1 Cache, or L2 / main MEM,
                 //   update the access state variable;
@@ -244,11 +401,12 @@ int main(int argc, char *argv[])
                 //     L2AcceState, MemAcceState = cache.writeL2(addr);
                 // }
                 // else if(){...}
+                res = cacheSystem.write(accessaddr.to_ulong());
             }
-/*********************************** ↑↑↑ Todo: Implement by you ↑↑↑ ******************************************/
-
-
-
+            L1AcceState = res.L1AcceState;
+            L2AcceState = res.L2AcceState;
+            MemAcceState = res.MemAcceState;
+            /*********************************** ↑↑↑ Todo: Implement by you ↑↑↑ ******************************************/
 
             // Grading: don't change the code below.
             // We will print your access state of each cycle to see if your simulator gives the same result as ours.
